@@ -1,0 +1,12 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: pod-kill
+  namespace: chaos-testing
+spec:
+  action: pod-kill
+  mode: fixed-percent
+  value: '50'
+  selector:
+    namespaces:
+      - workload

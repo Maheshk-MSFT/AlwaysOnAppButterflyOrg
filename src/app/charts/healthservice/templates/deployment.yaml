@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Chart.Name }}-deploy
+  labels:
+    app: {{ .Chart.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
+spec:
+  replicas: {{ .Values.workload.replicas | default 3 }}
+  selector:
+    matchLabels:
+      app: {{ .Chart.Name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Chart.Name }}
+    spec:
+      containers:
+      - image: {{ .Values.containerimage }}
+        imagePullPolicy: {{ .Values.container.pullPolicy | default "Always" | quote }}
+        name: healthservice
+        {{- if .Values.containerSecurityContext }}
+        securityContext: {{ toYaml .Values.containerSecurityContext | nindent 10 }}
+        {{- end }}
+        ports:
+        - containerPort: {{ .Values.workload.port | default 8080 }}
+        livenessProbe:
+          httpGet:
+            path: /health/liveness
+            port: {{ .Values.workload.port | default 8080 }}
+          initialDelaySeconds: 5
+          periodSeconds: 30
+          timeoutSeconds: 3
+        {{- if .Values.resources }}
+        resources: {{ toYaml .Values.resources | nindent 10 }}
+        {{- end }}
+        env:
+            - name: "AZURE_REGION" # This value only gets calculated at application deployment time so it does not exist in Key Vault as a secret (plus, it is not secret)
+              value: {{ .Values.azure.region }}
+            - name: "ASPNETCORE_URLS" # Port used to start the ASP.NET Core application
+              value: "http://+:{{ .Values.workload.port | default 8080 }}"
+            - name: "DOTNET_USE_POLLING_FILE_WATCHER" # Enables file system polling every 4 seconds (not configurable) when watching for configuration changes. CSI driver automatically updates secrets as files, but Docker is not sending file change notifications reliably
+              value: "true"
+        volumeMounts:
+          - name: secrets-store-inline
+            mountPath: "/mnt/secrets-store"
+            readOnly: true
+          - name: tmp-volume
+            mountPath: "/tmp"
+          - name: var-log-volume
+            mountPath: "/var/log"
+      nodeSelector:
+        role: workload
+      tolerations:
+      - key: "workload"
+        operator: "Equal"
+        value: "true"
+        effect: "NoSchedule"
+      volumes:
+        - name: secrets-store-inline
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: azure-kv
+        - name: tmp-volume
+          emptyDir: {}
+        - name: var-log-volume
+          emptyDir: {}

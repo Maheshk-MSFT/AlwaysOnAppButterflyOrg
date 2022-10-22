@@ -1,0 +1,1 @@
+{"mode":"all","selector":{"namespaces":["workload"],"labelSelectors":{"app":"catalogservice"}},"stressors":{"cpu":{"workers":1, "load":100}}}

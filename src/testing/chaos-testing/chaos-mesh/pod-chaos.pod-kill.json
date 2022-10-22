@@ -1,0 +1,1 @@
+{"action":"pod-kill","mode":"one","value":"","selector":{"namespaces":["workload"]}}

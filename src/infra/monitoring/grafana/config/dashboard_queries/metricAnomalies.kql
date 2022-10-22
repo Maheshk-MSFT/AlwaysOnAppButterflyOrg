@@ -1,0 +1,12 @@
+PublicBlobStorageHealthStatus
+| union KeyvaultHealthStatus
+| union CatalogServiceHealthStatus
+| union BackgroundProcessorHealthStatus
+| union AksClusterHealthStatus
+| union CheckpointStorageHealthStatus
+| union EventHubHealthStatus
+| where $__timeFilter(TimeGenerated)
+| where IsYellow > 0 or IsRed > 0
+| extend Status=iif(IsRed == 1 ,'red', 'yellow')
+| project TimeStamp=TimeGenerated, ['Component Name']=ComponentName, Metric=MetricName, Value, Status
+| order by TimeStamp desc

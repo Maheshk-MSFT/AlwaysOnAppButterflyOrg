@@ -1,0 +1,82 @@
+name: '[${{ parameters.environment }}] $(BuildDefinitionName).$(DayOfYear)$(Rev:.r)'
+
+trigger: none
+
+pr: none
+
+pool:
+  vmImage: 'ubuntu-20.04'
+
+parameters:
+- name: environment
+  displayName: 'Environment (Subscriptions)'
+  type: string
+  default: 'int'
+  values:
+  - int
+  - prod
+
+- name: loadTestNumberOfWorkerNodes
+  displayName: 'Number of Worker Nodes. Set to 0 to also destroy the master node.'
+  type: number
+  default: 0
+
+- name: loadTestTargetUrl
+  displayName: 'Loadtest Target URL (can be overriden later)'
+  type: string
+  default: "https://www.int.shop.mission-critical.app"
+
+variables:
+- template: config/configuration.yaml # contains version numbers and global configuration settings
+- name:  'workingDirectory' # Terraform working directory (containing the locust infra definition)
+  value: 'src/testing/loadtest-locust/infra'
+- name:  'environment' # set the environment name as variable
+  value: '${{ parameters.environment }}'
+- name:  'azureServiceConnection' # environment specific service connection
+  value: 'alwayson-${{ parameters.environment }}-serviceconnection'
+
+- template: config/variables-values-${{ parameters.environment }}.yaml # contains environment-specific values (non-secret)
+
+stages:
+
+- stage: deploylocust
+  displayName: 'Run locust loadtest'
+  jobs:
+  - job: deploylocustterraform
+    displayName: 'Deploy loadtest infrastructure (and run test when in embedded mode)'
+    steps:
+    - checkout: self # checkout github repository
+    - download: current # download pipeline artifacts
+
+    - template: templates/steps-set-pipeline-variables.yaml # load set-pipeline-variables function
+
+    - template: templates/steps-terraform-init.yaml
+      parameters:
+        terraformStorageAccountName:        '$(terraformStorageAccount)'
+        terraformStorageResourceGroupName:  '$(terraformResourceGroup)'
+        terraformStateFilename:             'terraform-locust-$(prefix).state'
+        terraformWorkingDirectory:          '$(workingDirectory)'
+
+    - task: Bash@3
+      name: 'terraformtaintlocustfile'
+      displayName: 'Terraform taint locustfile file'
+      inputs:
+        workingDirectory: '$(workingDirectory)'
+        targetType: 'inline'
+        script: |
+          set -eux  # fail on error
+
+          # Taint the locustfile so it will always be replaced with the latest version
+          terraform taint -allow-missing azurerm_storage_share_file.locustfile
+
+    # Deploy the locust infrastructure. If running in headless mode, the test will automatically start once the infra is provisioned.
+    - template: templates/steps-terraform-apply.yaml
+      parameters:
+        jobName:                    'LocustInfra'
+        terraformWorkingDirectory:  '$(workingDirectory)'
+        customPrefix:               '$(prefix)'
+        environment:                '$(environment)'
+        customAttributes:           '-var targeturl=${{ parameters.loadTestTargetUrl }}
+                                     -var queued_by="$(Build.QueuedBy)"
+                                     -var branch="$(sourceBranch)"
+                                     -var locust_workers=${{ parameters.loadTestNumberOfWorkerNodes }}'

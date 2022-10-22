@@ -1,0 +1,10 @@
+{
+    "name": "alwayson-healthmodelpanel",
+    "version": "1.0.0",
+    "description": "AlwaysOn Health Model panel",
+    "author": "nielsb@microsoft.com",
+    "license": "MIT",
+    "dependencies": {
+        "@nielsams/grafana-healthmodelpanel": "^0.1.3-alpha"
+    }
+}

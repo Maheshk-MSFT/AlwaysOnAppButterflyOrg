@@ -1,0 +1,9 @@
+// This is the aggregate score for the whole stamp.
+AddCommentUserFlowHealthScore()
+| union ListCatalogItemsUserFlowHealthScore()
+| union ShowStaticContentUserFlowHealthScore()
+| where TimeGenerated < ago(2m)
+| summarize YellowScore = max(YellowScore), RedScore = max(RedScore) by bin(TimeGenerated, 2m)
+| extend HealthScore = 1 - (YellowScore * 0.25) - (RedScore * 0.5)
+| order by TimeGenerated desc
+| extend ComponentName = "Stamp", Dependencies = "AddCommentUserFlow,ShowStaticContentUserFlow,ListCatalogItemsUserFlow"

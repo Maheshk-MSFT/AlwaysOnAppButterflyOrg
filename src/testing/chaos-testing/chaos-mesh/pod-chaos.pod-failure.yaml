@@ -1,0 +1,14 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: pod-failure
+  namespace: chaos-testing
+spec:
+  action: pod-failure
+  mode: fixed-percent
+  value: '50'
+  selector:
+    namespaces:
+      - workload
+  scheduler:
+    cron: '@every 1m'

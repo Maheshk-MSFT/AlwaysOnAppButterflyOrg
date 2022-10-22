@@ -1,0 +1,90 @@
+// Return the health status of the AKS cluster.
+let _maxAge = 2d; // Only include data from the last two days
+let _timespanStart = ago(_maxAge); // Start time for the timespan
+// Examining timeframe from series start to now-2m (ingestion delay)
+let _timespanEnd = now(-2m); // there is some ingestion lag, so we account for this by stripping the last 2m
+let Thresholds=datatable(MetricName: string, YellowThreshold: double, RedThreshold: double) [
+    // Network errors in:
+    "err_in", 0, 5,
+    // Network errors out:
+    "err_out", 0, 5,
+    // Average node cpu usage %:
+    "node_cpu_usage_percentage", 60, 90,
+    // Average node disk usage %:
+    "node_disk_usage_percentage", 60, 80,
+    // Average node memory usage %:
+    "node_memory_rss_percentage", 60, 80,
+    // Percentage of how much did the HPA scaled out deployments to their maximum setting
+    "autoscaled_percentage", 60, 90,
+    "pod_restart_count", 1, 5,
+    "pod_avg_cpu_utilization", 80, 90,
+    ];
+//
+let podCpuLimits = Perf
+| where ObjectName == 'K8SContainer'
+| where CounterName == "cpuLimitNanoCores"
+| where TimeGenerated > _timespanStart
+| extend ServiceName = extract("^.+/(.+)$", 1, InstanceName)
+| summarize cpuLimit=max(CounterValue) by ServiceName;
+//
+// Join InsightsMetrics for AKS with AzureMetrics table
+let joinedMetrics = InsightsMetrics
+| where TimeGenerated > _timespanStart
+| project-rename MetricName=Name
+| extend NodeName = extract("([a-z0-9-]*)(-)([a-z0-9]*)$", 3, Computer) // Add a column for the name of the cluster node
+| project TimeGenerated, NodeName, MetricName, Value=toreal(Val)
+| union (
+    AzureMetrics
+    | where TimeGenerated > _timespanStart
+    | where ResourceProvider == "MICROSOFT.CONTAINERSERVICE"
+    | project TimeGenerated, MetricName, Value=toreal(Average)
+    );
+//
+let scaleMetrics =
+    // Query HPA auto scaling to see if we are getting close to the max scale out settings
+    InsightsMetrics
+    | where TimeGenerated > _timespanStart
+    | where Name == "kube_hpa_status_current_replicas"
+    | extend TagsDynamic = parse_json(Tags)
+    | extend Service = extract("(.+)-autoscaler", 1, tostring(TagsDynamic['hpa']))
+    | where Service == "catalogservice" or Service == "backgroundprocessor"
+    | extend maxReplica = TagsDynamic['spec_max_replicas']
+    | extend PercentageAutoscaled = Val / maxReplica * 100
+    | project TimeGenerated, Service, Value=toreal(PercentageAutoscaled), currentReplicas=strcat(toint(Val)," / ", maxReplica), MetricName="autoscaled_percentage";
+//
+let podRestartMetrics = KubePodInventory
+    // Count number of pod restarts per service
+    | where TimeGenerated > _timespanStart
+    | where Namespace == "workload"
+    | extend Service = extract("(.+)-deploy.", 1, ControllerName)
+    | extend MetricName="pod_restart_count", Value=toreal(PodRestartCount)
+    | summarize Value=sum(Value) by TimeGenerated, Service, MetricName
+    | partition by Service
+    (
+        sort by TimeGenerated asc
+        | extend Value = next(Value)-Value
+    )
+    | where isnotempty(Value);
+//
+let cpuUtilizationMetrics =
+    Perf
+    | where TimeGenerated > _timespanStart
+    | where ObjectName == 'K8SContainer'
+    | where InstanceName endswith "catalogservice" or InstanceName endswith "backgroundprocessor"
+    | extend Service= extract("^.+/(.+)$", 1, InstanceName)
+    | where CounterName == "cpuUsageNanoCores"
+    | lookup kind = inner podCpuLimits on $left.Service == $right.ServiceName
+    | extend Value=toreal(CounterValue / cpuLimit * 100), MetricName="pod_avg_cpu_utilization"
+    | project-away cpuLimit;
+//
+joinedMetrics
+| union scaleMetrics
+| union podRestartMetrics
+| union cpuUtilizationMetrics
+| make-series Value=max(Value) default=0 on TimeGenerated from _timespanStart to _timespanEnd step 1m by MetricName
+| mv-expand TimeGenerated, Value
+| extend TimeGenerated = todatetime(TimeGenerated), Value=toreal(Value)
+| lookup kind=inner Thresholds on MetricName
+| extend IsYellow = iff(Value > YellowThreshold and Value < RedThreshold, 1, 0)
+| extend IsRed = iff(Value > RedThreshold, 1, 0)
+| extend ComponentName="AKSCluster"
